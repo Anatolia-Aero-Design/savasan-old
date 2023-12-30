@@ -2,29 +2,20 @@
 import rospy
 from sensor_msgs.msg import Imu, BatteryState
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, String
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import State
 import requests
-import time
-import json
-from roslibpy import Message
-import json
 import math
 
-
 def calculate_speed(x, y, z):
-    speed = math.sqrt(x**2 + y**2 + z**2)
+    speed = math.sqrt(x ** 2 + y ** 2 + z ** 2)
     return speed
 
 def mode_guided(mode):
-    if mode == True:
-        return 0
-    else: 
-        return 1
-
+    return 0 if mode else 1
 
 def quaternion_to_euler(x, y, z, w):
     # Quaternion order: w, x, y, z
@@ -43,11 +34,9 @@ def quaternion_to_euler(x, y, z, w):
 
     return yaw, pitch, roll
 
-
-
-def callback(imu_msg, battery_msg, rel_altitude_msg, position_msg, speed_sub, state_sub):
+def callback(imu_msg, battery_msg, rel_altitude_msg, position_msg, speed_sub, state_sub, response_pub):
     data_dict = {
-        "takim_numarasi" : 1,
+        "takim_numarasi": 1,
         "IHA_enlem": position_msg.latitude,
         "IHA_boylam": position_msg.longitude,
         "IHA_irtifa": rel_altitude_msg.data,
@@ -58,21 +47,23 @@ def callback(imu_msg, battery_msg, rel_altitude_msg, position_msg, speed_sub, st
         "IHA_batarya": int(battery_msg.percentage * 100),
         "IHA_otonom": mode_guided(state_sub.guided)
     }
-    
-    #TODO: kitlenme verilerini ekle
-    server_url = rospy.get_param('~server_ip',"http://127.0.0.1:5000/update_data")
 
-    response = requests.post(server_url, json=data_dict)
-    #TODO: parse the response
+    server_url = rospy.get_param('~server_ip', "http://127.0.0.1:5000/update_data")
 
-    if response.status_code == 200:
-        print(response.status_code)
-        print(response.json())
-    else:
-        print(f"Hata: {response.status_code}")
-    
-    
-    
+    try:
+        response = requests.post(server_url, json=data_dict)
+        rospy.loginfo('Data sent successfully')
+        if response.status_code == 200:
+            rospy.loginfo(f"Response: {response.status_code}")
+            # Publish the server response to a ROS topic
+            response_pub.publish(response.text)  # Assuming the response is text
+        else:
+            rospy.loginfo(f"Error: {response.status_code}")
+            response_pub.publish("Error: " + str(response.status_code))  # Publish error message
+    except requests.RequestException as e:
+        rospy.logerr(f"Request failed: {e}")
+        response_pub.publish("Request failed: " + str(e)) 
+
 def synchronize_topics():
     rospy.init_node('sync_node', anonymous=True)
 
@@ -81,21 +72,24 @@ def synchronize_topics():
     rel_altitude_sub = Subscriber('/mavros/global_position/rel_alt', Float64)
     position_sub = Subscriber('/mavros/global_position/global', NavSatFix)
     speed_sub = Subscriber('/mavros/local_position/velocity_local', TwistStamped)
-    state_sub = Subscriber('/mavros/state' , State)
+    state_sub = Subscriber('/mavros/state', State)
 
-    # ApproximateTimeSynchronizer to synchronize messages based on timestamps
     sync = ApproximateTimeSynchronizer(
         [imu_sub, battery_sub, rel_altitude_sub, position_sub, speed_sub, state_sub],
         queue_size=10,
-        slop=0.1,  # Adjust this parameter based on your message timestamp tolerances
+        slop=0.1,
         allow_headerless=True
     )
-    sync.registerCallback(callback)
+    response_pub = rospy.Publisher('/server_response', String, queue_size=10)
+    sync.registerCallback(callback,response_pub)
+
+
+
 
     rospy.spin()
 
-
 if __name__ == '__main__':
-    synchronize_topics()
-   
-   
+    try:
+        synchronize_topics()
+    except rospy.ROSInterruptException:
+        pass
